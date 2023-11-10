@@ -5,8 +5,12 @@ import { isUnixMicro, unixMicroToIsoTimestamp } from 'components/interfaces/Sett
 import FunctionsLayout from 'components/layouts/FunctionsLayout'
 import AreaChart from 'components/ui/Charts/AreaChart'
 import BarChart from 'components/ui/Charts/BarChart'
+import StackedBarChart from 'components/ui/Charts/StackedBarChart'
 import NoPermission from 'components/ui/NoPermission'
-import { useFunctionsInvStatsQuery } from 'data/analytics/functions-inv-stats-query'
+import {
+  useFunctionsInvStatsQuery,
+  useFunctionsResourceQuery,
+} from 'data/analytics/functions-inv-stats-query'
 import { useEdgeFunctionQuery } from 'data/edge-functions/edge-function-query'
 import dayjs, { Dayjs } from 'dayjs'
 import { useCheckPermissions } from 'hooks'
@@ -26,10 +30,34 @@ const CHART_INTERVALS: ChartIntervals[] = [
     startUnit: 'minute',
     format: 'MMM D, h:mm:ssa',
   },
-  { key: '15min', label: '15 min', startValue: 15, startUnit: 'minute', format: 'MMM D, h:mma' },
-  { key: '1hr', label: '1 hour', startValue: 1, startUnit: 'hour', format: 'MMM D, h:mma' },
-  { key: '1day', label: '1 day', startValue: 1, startUnit: 'hour', format: 'MMM D, h:mma' },
-  { key: '7day', label: '7 days', startValue: 7, startUnit: 'day', format: 'MMM D' },
+  {
+    key: '15min',
+    label: '15 min',
+    startValue: 15,
+    startUnit: 'minute',
+    format: 'MMM D, h:mma',
+  },
+  {
+    key: '1hr',
+    label: '1 hour',
+    startValue: 1,
+    startUnit: 'hour',
+    format: 'MMM D, h:mma',
+  },
+  {
+    key: '1day',
+    label: '1 day',
+    startValue: 1,
+    startUnit: 'hour',
+    format: 'MMM D, h:mma',
+  },
+  {
+    key: '7day',
+    label: '7 days',
+    startValue: 7,
+    startUnit: 'day',
+    format: 'MMM D',
+  },
 ]
 
 const PageLayout: NextPageWithLayout = () => {
@@ -37,7 +65,10 @@ const PageLayout: NextPageWithLayout = () => {
   const { ref: projectRef, functionSlug } = useParams()
   const [interval, setInterval] = useState<string>('15min')
   const selectedInterval = CHART_INTERVALS.find((i) => i.key === interval) || CHART_INTERVALS[1]
-  const { data: selectedFunction } = useEdgeFunctionQuery({ projectRef, slug: functionSlug })
+  const { data: selectedFunction } = useEdgeFunctionQuery({
+    projectRef,
+    slug: functionSlug,
+  })
   const id = selectedFunction?.id
 
   const { data, error } = useFunctionsInvStatsQuery({
@@ -45,8 +76,50 @@ const PageLayout: NextPageWithLayout = () => {
     functionId: id,
     interval: selectedInterval.key,
   })
+  const { data: resourceUsageData, error: resourceUsageError } = useFunctionsResourceQuery({
+    projectRef,
+    functionId: id,
+    interval: selectedInterval.key,
+  })
   const isChartLoading = !data?.result && !error ? true : false
+  const isResourceChartLoading = !resourceUsageData?.result && !error ? true : false
+
+  const normalizedResourceData = useMemo(() => {
+    return (resourceUsageData?.result || []).map((d: any) => ({
+      avg_cpu_time_used: d.avg_cpu_time_used,
+      avg_memory_used: (d.avg_heap_memory_used + d.avg_external_memory_used) / (1024 * 1024),
+      timestamp: isUnixMicro(d.timestamp) ? unixMicroToIsoTimestamp(d.timestamp) : d.timestamp,
+    }))
+  }, [resourceUsageData?.result])
+
   const normalizedData = useMemo(() => {
+    return (data?.result || [])
+      .map((d: any) => [
+        {
+          status: '2xx',
+          count: d.success_count,
+          timestamp: isUnixMicro(d.timestamp) ? unixMicroToIsoTimestamp(d.timestamp) : d.timestamp,
+        },
+        {
+          status: '3xx',
+          count: d.redirect_count,
+          timestamp: isUnixMicro(d.timestamp) ? unixMicroToIsoTimestamp(d.timestamp) : d.timestamp,
+        },
+        {
+          status: '4xx',
+          count: d.client_err_count,
+          timestamp: isUnixMicro(d.timestamp) ? unixMicroToIsoTimestamp(d.timestamp) : d.timestamp,
+        },
+        {
+          status: '5xx',
+          count: d.server_err_count,
+          timestamp: isUnixMicro(d.timestamp) ? unixMicroToIsoTimestamp(d.timestamp) : d.timestamp,
+        },
+      ])
+      .flat()
+  }, [data?.result])
+
+  const execNormalizedData = useMemo(() => {
     return (data?.result || []).map((d: any) => ({
       ...d,
       timestamp: isUnixMicro(d.timestamp) ? unixMicroToIsoTimestamp(d.timestamp) : d.timestamp,
@@ -61,10 +134,30 @@ const PageLayout: NextPageWithLayout = () => {
     const end = dayjs().startOf(selectedInterval.startUnit as dayjs.ManipulateType)
     return [start, end]
   }, [selectedInterval])
-  const chartData = useFillTimeseriesSorted(
-    normalizedData,
+
+  const execChartData = useFillTimeseriesSorted(
+    execNormalizedData,
     'timestamp',
     ['avg_execution_time', 'count'],
+    0,
+    startDate.toISOString(),
+    endDate.toISOString()
+  )
+  // const chartData = useFillTimeseriesSorted(
+  //   normalizedData,
+  //   'timestamp',
+  //   ['status', 'count'],
+  //   0,
+  //   startDate.toISOString(),
+  //   endDate.toISOString()
+  // )
+  const chartData = normalizedData
+  console.log(chartData)
+
+  const resourceChartData = useFillTimeseriesSorted(
+    normalizedResourceData,
+    'timestamp',
+    ['avg_cpu_time_used', 'avg_memory_used'],
     0,
     startDate.toISOString(),
     endDate.toISOString()
@@ -114,10 +207,10 @@ const PageLayout: NextPageWithLayout = () => {
           <ReportWidget
             title="Execution time"
             tooltip="Average execution time of function invocations"
-            data={chartData}
+            data={execChartData}
             isLoading={isChartLoading}
             renderer={(props) => {
-              const latest = normalizedData[normalizedData.length - 1]
+              const latest = execChartData[execChartData.length - 1]
               let highlightedValue
               if (latest) {
                 highlightedValue = latest['avg_execution_time']
@@ -140,13 +233,15 @@ const PageLayout: NextPageWithLayout = () => {
             data={chartData}
             isLoading={isChartLoading}
             renderer={(props) => (
-              <BarChart
+              <StackedBarChart
                 className="w-full"
                 xAxisKey="timestamp"
                 yAxisKey="count"
+                stackKey="status"
                 data={props.data}
                 highlightedValue={sumBy(props.data, 'count')}
                 customDateFormat={selectedInterval.format}
+                stackColors={['brand', 'slate', 'yellow', 'red']}
                 onBarClick={(v) => {
                   router.push(
                     `/project/${projectRef}/functions/${functionSlug}/invocations?its=${startDate.toISOString()}&ite=${
@@ -156,6 +251,54 @@ const PageLayout: NextPageWithLayout = () => {
                 }}
               />
             )}
+          />
+          <ReportWidget
+            title="CPU time"
+            tooltip="Average CPU time usage for the function"
+            data={resourceChartData}
+            isLoading={isResourceChartLoading}
+            renderer={(props) => {
+              const latest = normalizedResourceData[normalizedResourceData.length - 1]
+              let highlightedValue
+              if (latest) {
+                highlightedValue = latest['avg_cpu_time_used']
+              }
+              return (
+                <AreaChart
+                  className="w-full"
+                  xAxisKey="timestamp"
+                  customDateFormat={selectedInterval.format}
+                  yAxisKey="avg_cpu_time_used"
+                  data={props.data}
+                  format="ms"
+                  highlightedValue={highlightedValue}
+                />
+              )
+            }}
+          />
+          <ReportWidget
+            title="Memory"
+            tooltip="Average memory usage for the function"
+            data={resourceChartData}
+            isLoading={isResourceChartLoading}
+            renderer={(props) => {
+              const latest = normalizedResourceData[normalizedResourceData.length - 1]
+              let highlightedValue
+              if (latest) {
+                highlightedValue = latest['avg_memory_used']
+              }
+              return (
+                <AreaChart
+                  className="w-full"
+                  xAxisKey="timestamp"
+                  customDateFormat={selectedInterval.format}
+                  yAxisKey="avg_memory_used"
+                  data={props.data}
+                  format="MB"
+                  highlightedValue={highlightedValue}
+                />
+              )
+            }}
           />
         </div>
       </div>
